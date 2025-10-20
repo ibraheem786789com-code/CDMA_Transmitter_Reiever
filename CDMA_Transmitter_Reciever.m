@@ -1,10 +1,9 @@
 close all; clc; clear;
-
 %% ---------------------------------------------------------------
 % 1. READ TWO AUDIO FILES AND DOWNSAMPLE TO 1200 SAMPLES/SEC
 % ---------------------------------------------------------------
 [x, gs] = audioread('tum_hi_aana_ringtone.wav');
-[y, fs] = audioread('voice2.wav');
+[y, fs] = audioread('chaand_se_parda.wav');
 
 if size(x, 2) > 1, x = mean(x, 2); end
 if size(y, 2) > 1, y = mean(y, 2); end
@@ -13,8 +12,8 @@ target_fs = 1200;
 if gs ~= target_fs, x = resample(x, target_fs, gs); end
 if fs ~= target_fs, y = resample(y, target_fs, fs); end
 
-x = x(1:target_fs*16);   % 15 seconds
-y = y(1:target_fs*15);
+x = x(1:target_fs*5);   % 15 seconds
+y = y(1:target_fs*5);
 
 frame_dur = 0.02;                    % 20 ms per frame
 Fs = 1200;                           
@@ -54,12 +53,12 @@ for f = 1:num_frames
     idx_end = min(f*samples_per_frame, length(x));
 
     x_frame = x(idx_start:idx_end);
-    y_frame = y(idx_start:idx_end);
-
+    y_frame1 = y(idx_start:idx_end);
+    y_frame = y_frame1 / max(abs(y_frame1));
     % ---- (1) Quantization ----
     xq = round((x_frame + 1) / step_size);
     yq = round((y_frame + 1) / step_size);
-
+    
     % ---- (2) Binary conversion ----
     tx_bits1 = reshape(de2bi(xq, 8, 'left-msb').', [], 1);
     tx_bits2 = reshape(de2bi(yq, 8, 'left-msb').', [], 1);
@@ -85,7 +84,52 @@ for f = 1:num_frames
         spread_bits2 = [spread_bits2 bit2 * code2];
     end
 
-    rx = spread_bits1 + spread_bits2;
+    rx1 = spread_bits1 + spread_bits2;
+   
+   rx = (rx1 / max(abs(rx1)))';
+m=length(rx);
+% Map to bits (QPSK needs 2 bits per symbol)
+% We'll convert -1 -> [0 0], 0 -> [0 1], +1 -> [1 1]
+bit_stream = zeros(m*2,1);
+for k = 1:m
+    switch rx(k)
+        case -1
+            bits = [0 0];
+        case 0
+            bits = [0 1];
+        case 1
+            bits = [1 1];
+    end
+    bit_stream(2*k-1:2*k) = bits;
+end
+
+%% QPSK Modulation
+
+hMod = comm.QPSKModulator('BitInput', true, 'PhaseOffset', pi/4);
+tx = step(hMod, bit_stream);
+
+%% No noise (perfect channel)
+rx3 = tx;
+
+%% QPSK Demodulation
+hDemod = comm.QPSKDemodulator('BitOutput', true, 'PhaseOffset', pi/4);
+rx_bits = step(hDemod, rx3);
+
+%% Convert bits back to (-1,0,1)
+rx_data = zeros(m,1);
+for k = 1:m
+    bits = rx_bits(2*k-1:2*k).';
+    if isequal(bits, [0 0])
+        rx_data(k) = -1;
+    elseif isequal(bits, [0 1])
+        rx_data(k) = 0;
+    elseif isequal(bits, [1 1])
+        rx_data(k) = 1;
+    else
+        rx_data(k) = NaN; % unexpected pattern
+    end
+end
+rx=rx_data;
 
     % ---- (5) Despread ----
     rx_chips = reshape(rx, N, []);
@@ -127,7 +171,6 @@ for f = 1:num_frames
     % Play only User 1 in real-time
     deviceWriter(analog1);   
 end
-
 %% ---------------------------------------------------------------
 % 4. CLEANUP & SAVE FILES
 % ---------------------------------------------------------------
