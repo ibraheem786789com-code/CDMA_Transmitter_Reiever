@@ -4,10 +4,8 @@ close all; clc; clear;
 % ---------------------------------------------------------------
 [x, gs] = audioread('tum_hi_aana_ringtone.wav');
 [y, fs] = audioread('chaand_se_parda.wav');
-
 if size(x, 2) > 1, x = mean(x, 2); end
 if size(y, 2) > 1, y = mean(y, 2); end
-
 target_fs = 1200;
 if gs ~= target_fs, x = resample(x, target_fs, gs); end
 if fs ~= target_fs, y = resample(y, target_fs, fs); end
@@ -125,6 +123,32 @@ for f = 1:num_frames
     % PROPER CDMA COMBINING: Sum all channels
     tx_chips = spread_bits1 + spread_bits2 + pilot_spread;
     
+
+%% ------------------- PLOTS: CDMA SPREADING -------------------
+if f == 1   % plot only for first frame
+
+    figure('Name','CDMA Spreading & Combining','Position',[200 100 1000 600]);
+
+    subplot(3,1,1);
+    plot(spread_bits1(1:500));
+    title('User 1 Spread Chips (first 500 samples)');
+    xlabel('Chip Index'); ylabel('Amplitude'); grid on;
+
+    subplot(3,1,2);
+    plot(spread_bits2(1:500));
+    title('User 2 Spread Chips (first 500 samples)');
+    xlabel('Chip Index'); ylabel('Amplitude'); grid on;
+
+    subplot(3,1,3);
+    plot(tx_chips(1:500));
+    title('Composite CDMA Chips (User1 + User2 + Pilot)');
+    xlabel('Chip Index'); ylabel('Amplitude'); grid on;
+
+end
+
+
+
+
     % Analyze composite signal statistics
     composite_power = mean(tx_chips.^2);
     user1_power = mean(spread_bits1.^2);
@@ -138,55 +162,147 @@ for f = 1:num_frames
 
     % Normalize composite for modulation stage (maintains relative powers)
     rx = (tx_chips / max(abs(tx_chips))).';
-    m = length(rx);
+  
 
-    % Map to bits (QPSK needs 2 bits per symbol)
-    % We need to properly quantize the composite signal
-    bit_stream = zeros(m*2,1);
-    for k = 1:m
-        chip_value = rx(k);
-        % Quantize to 4 levels for QPSK
-        if chip_value < -0.5
-            bits = [0 0];
-        elseif chip_value < 0
-            bits = [0 1];
-        elseif chip_value < 0.5
-            bits = [1 0];
-        else
-            bits = [1 1];
-        end
-        bit_stream(2*k-1:2*k) = bits;
-    end
 
-    %% QPSK Modulation
-    hMod = comm.QPSKModulator('BitInput', true, 'PhaseOffset', pi/4);
-    tx = step(hMod, bit_stream);
 
-    %% No noise (perfect channel)
-    rx3 = tx;
 
-    %% QPSK Demodulation
-    hDemod = comm.QPSKDemodulator('BitOutput', true, 'PhaseOffset', pi/4);
-    rx_bits = step(hDemod, rx3);
+%% ------------------- RF TRANSMISSION -------------------
+fs_RF = 1e5;       % baseband sampling rate for visualization
+fc = 2e3;          % RF carrier frequency (simulation)
+sps = 8;           % samples per chip
 
-    %% Convert bits back to chip values
-    rx_data = zeros(m,1);
-    for k = 1:m
-        bits = rx_bits(2*k-1:2*k).';
-        if isequal(bits, [0 0])
-            rx_data(k) = -0.75;  % approximate -1
-        elseif isequal(bits, [0 1])
-            rx_data(k) = -0.25;  % approximate -0.33
-        elseif isequal(bits, [1 0])
-            rx_data(k) = 0.25;   % approximate 0.33
-        else % [1 1]
-            rx_data(k) = 0.75;   % approximate 1
-        end
-    end
-    rx = rx_data;
+% Upsample to simulate DAC
+rx_upsampled = upsample(rx, sps);
+
+t = (0:length(rx_upsampled)-1)/fs_RF;
+
+% Pulse shaping (rectangular)
+pulse = ones(1,sps);
+rx_filtered = conv(rx_upsampled, pulse, 'same');
+
+
+
+%% ------------------- PLOTS: BASEBAND SIGNAL -------------------
+if f == 1
+    figure('Name','Baseband Pulse-Shaping','Position',[200 100 1000 500]);
+
+    subplot(2,1,1);
+    plot(rx_upsampled(1:300));
+    title('Upsampled Chips (first 300 samples)');
+    xlabel('Sample Index'); grid on;
+
+    subplot(2,1,2);
+    plot(rx_filtered(1:300));
+    title('Pulse-Shaped Baseband Signal (first 300 samples)');
+    xlabel('Sample Index'); grid on;
+end
+
+% Split into I/Q (QPSK mapping: consecutive samples)
+L = length(rx_filtered);
+if mod(L,2)==1
+    rx_filtered = [rx_filtered; 1]; % pad to even
+end
+
+I_base = rx_filtered(1:2:end);
+Q_base = rx_filtered(2:2:end);
+
+
+%% ------------------- PLOTS: I(t) AND Q(t) -------------------
+if f == 1
+    figure('Name','Baseband I/Q','Position',[200 100 1000 500]);
+
+    subplot(2,1,1);
+    plot(I_base(1:200),'r');
+    title('I(t) Baseband (first 200 samples)');
+    xlabel('Sample Index'); ylabel('I'); grid on;
+
+    subplot(2,1,2);
+    plot(Q_base(1:200),'b');
+    title('Q(t) Baseband (first 200 samples)');
+    xlabel('Sample Index'); ylabel('Q'); grid on;
+end
+
+
+
+
+% RF upconversion
+I_RF = I_base .* cos(2*pi*fc*t(1:length(I_base))).';
+Q_RF = Q_base .* sin(2*pi*fc*t(1:length(Q_base))).';
+RF_signal = I_RF - Q_RF;  % real RF waveform
+
+% Normalize for plotting
+RF_signal = RF_signal / max(abs(RF_signal));
+
+%% ------------------- PLOTS: RF WAVEFORM -------------------
+if f == 1
+    figure('Name','RF Modulated Signal','Position',[200 100 1000 400]);
+    plot(RF_signal(1:1000));
+    title('RF Waveform (first 1000 samples)');
+    xlabel('Sample Index');
+    ylabel('Amplitude');
+    grid on;
+end
+
+%% ------------------- RF RECEPTION -------------------
+% Assume ideal channel (no noise)
+rx_RF_received = RF_signal;
+
+% Downconvert to baseband
+I_rx = 2 * rx_RF_received .* cos(2*pi*fc*t(1:length(rx_RF_received))).';
+Q_rx = -2 * rx_RF_received .* sin(2*pi*fc*t(1:length(rx_RF_received))).';
+
+% Low-pass filter (simple moving average) to remove high-frequency components
+lp_filter = ones(1,sps)/sps;
+I_bb = conv(I_rx, lp_filter, 'same');
+Q_bb = conv(Q_rx, lp_filter, 'same');
+
+%% ------------------- PLOTS: RECEIVED BASEBAND I/Q -------------------
+if f == 1
+    figure('Name','Received I/Q Baseband','Position',[200 100 1000 500]);
+
+    subplot(2,1,1);
+    plot(I_bb(1:200),'r');
+    title('Recovered I(t) after Downconversion');
+    grid on;
+
+    subplot(2,1,2);
+    plot(Q_bb(1:200),'b');
+    title('Recovered Q(t) after Downconversion');
+    grid on;
+end
+
+
+
+
+
+% Reconstruct baseband signal (interleave I/Q)
+rx_baseband = zeros(length(I_bb)+length(Q_bb),1);
+rx_baseband(1:2:end) = I_bb;
+rx_baseband(2:2:end) = Q_bb;
+
+% Downsample back to one sample per chip
+rx_downsampled = rx_baseband(1:sps:end);
+
+%% ------------------- PLOTS: RECOVERED CHIPS -------------------
+if f == 1
+    figure('Name','Recovered Chips','Position',[200 100 1000 400]);
+    plot(rx_downsampled(1:500));
+    title('Recovered Chips After RF → Baseband → Downsample (first 500)');
+    xlabel('Chip Index'); ylabel('Amplitude'); grid on;
+end
+
+
+
+
+
+%% ------------------- CDMA DESPREADING -------------------
+rx_chips = rx_downsampled;
+
+rx1 = rx_chips(:).'; % row vector
 
     % ---- (5) Despread (users + pilot) ----
-    rx_chips = reshape(rx, N, []);    % N x num_sym
+    rx_chips = reshape(rx1, N, []);    % N x num_sym
     
     % Despread each channel with proper scaling compensation
     decisions = [code1; code2; code_pilot] * rx_chips;  % 3 x num_sym
@@ -197,6 +313,25 @@ for f = 1:num_frames
     detected_user2_raw = decisions_norm(2, :) / user2_scale;
     detected_pilot_raw = decisions_norm(3, :) / pilot_scale;
     
+%% ------------------- PLOTS: DESPREADING OUTPUT -------------------
+if f == 1
+    figure('Name','Despreader Output','Position',[200 100 1000 600]);
+
+    subplot(3,1,1);
+    stem(detected_user1_raw(1:50));
+    title('User1 Correlator Output (first 50)');
+    grid on;
+
+    subplot(3,1,2);
+    stem(detected_user2_raw(1:50));
+    title('User2 Correlator Output (first 50)');
+    grid on;
+
+    subplot(3,1,3);
+    plot(detected_pilot_raw(1:200));
+    title('Pilot Channel Detection (first 200)');
+    grid on;
+end
     % Binary decisions
     detected_user1 = double(detected_user1_raw > 0);
     detected_user2 = double(detected_user2_raw > 0);
@@ -229,6 +364,20 @@ for f = 1:num_frames
     bytes2 = reshape(decodedBits2(1:floor(length(decodedBits2)/8)*8), 8, []).';
     n2 = bi2de(bytes2, 'left-msb');
     analog2 = (n2 / 128) - 1;
+%% ------------------- PLOTS: RECONSTRUCTED AUDIO -------------------
+if f == 1
+    figure('Name','Reconstructed Analog (First Frame)','Position',[200 100 1000 500]);
+
+    subplot(2,1,1);
+    plot(analog1);
+    title('User1 Reconstructed Analog (Frame 1)');
+    grid on;
+
+    subplot(2,1,2);
+    plot(analog2);
+    title('User2 Reconstructed Analog (Frame 1)');
+    grid on;
+end
 
     % ---- Store pilot reference for this frame ----
     pilot_total = [pilot_total; detected_pilot(:).']; %#ok<AGROW>
@@ -297,5 +446,8 @@ title('Composite Signal Amplitude Distribution');
 xlabel('Amplitude');
 ylabel('Count');
 grid on;
-
 disp('✅ Real-time CDMA processing complete with proper Pilot channel.');
+numErrors = sum(detected_user1(:) ~= interleaved1(:));
+ disp(['Total Bit Errors after RF simulation user1: ', num2str(numErrors)]);
+ numErrors = sum(detected_user2(:) ~= interleaved2(:));
+ disp(['Total Bit Errors after RF simulation user2: ', num2str(numErrors)]);
